@@ -23,6 +23,7 @@ from fgltools import get_brightest_sources
 import subprocess
 import threading
 import Queue
+from math import sqrt
 
 
 
@@ -44,10 +45,10 @@ class LatLikeApp(tk.Frame):
         self.logLock = threading.Lock()
         self.logThread.deamon = True
         self.stop = False
-        self.norm_flux = 1e-9
-        self.all_flux = 1e-8
-        self.norm_deg = self.analysis.obs_pars['roi']
-        self.all_deg = self.analysis.obs_pars['roi']*0.5
+#        self.norm_flux = 1e-9
+#        self.all_flux = 1e-8
+#        self.norm_deg = self.analysis.obs_pars['roi']
+#        self.all_deg = self.analysis.obs_pars['roi']*0.5
         self.createWidgets()
 
 #  logging stuff
@@ -150,13 +151,14 @@ class LatLikeApp(tk.Frame):
         self.modelvar = tk.StringVar()
         self.filtered_events = tk.StringVar()
         self.image_file = tk.StringVar()
-        self.lc_file = tk.StringVar()        
-        self.lc_bin = tk.StringVar()
+        self.ccube_file = tk.StringVar()        
+        self.expcube_file = tk.StringVar()        
+        self.srcmap_file = tk.StringVar()
         self.irfs = tk.StringVar()
-        self.lc_bin.set("month")
-        self.lc_tres = 30*86400
-        self.lc_file.set("lc.fits")
-        self.lc_pl_index.set("2.5")
+#        self.lc_bin.set("month")
+#        self.lc_tres = 30*86400
+#        self.lc_file.set("lc.fits")
+#        self.lc_pl_index.set("2.5")
         self.par_fixed.set(1)
 
 
@@ -375,7 +377,7 @@ class LatLikeApp(tk.Frame):
         self.FilterFrame.grid_rowconfigure(0,weight=1)
         self.FilterFrame.grid_rowconfigure(1,weight=1)
         self.FilterFrame.grid_rowconfigure(2,weight=2)
-#        self.FilterFrame.grid_rowconfigure(3,weight=1)
+        self.FilterFrame.grid_rowconfigure(3,weight=1)
 
         self.DataFr = tk.LabelFrame(self.FilterFrame,bd=1,text="Events")
         self.DataFr.grid_columnconfigure(0,weight=1)
@@ -414,6 +416,48 @@ class LatLikeApp(tk.Frame):
 #        self.rootname_entry.trace("w",self.set_spectrum_panel)        
         
         self.CubeFr.grid(column=0,row=1,sticky='EWNS')
+
+
+# Frame for 3D cube (gtbin)
+
+        self.CcubeFrame = tk.LabelFrame(self.FilterFrame,bd=1,
+                                    relief=tk.GROOVE,
+                                    text="3D Map")
+
+        self.CcubeFrame.grid_columnconfigure(0,weight=1)
+        self.CcubeFrame.grid_columnconfigure(1,weight=1)
+        self.CcubeFrame.grid_columnconfigure(2,weight=1)
+
+        self.CcubeCreateButton = tk.Button(self.CcubeFrame,
+                                       text="Extract Ccube",relief=tk.GROOVE,
+                                       command=self.ccube_thread)
+        self.CcubeCreateButton.grid(column=1,row=0,sticky='EWNS')
+
+        self.CcubeLabel = tk.Label(self.CcubeFrame,textvariable=self.ccube_file)
+        self.CcubeLabel.grid(column=0,row=0,sticky='EWNS')
+
+        self.CcubeFrame.grid(column=0,row=2,sticky=tk.N+tk.S+tk.E+tk.W)
+
+# Frame for exposure map (gtexpcube2)
+
+        self.ExpcubeFrame = tk.LabelFrame(self.FilterFrame,bd=1,
+                                    relief=tk.GROOVE,
+                                    text="Exposure Map")
+
+        self.ExpcubeFrame.grid_columnconfigure(0,weight=1)
+        self.ExpcubeFrame.grid_columnconfigure(1,weight=1)
+        self.ExpcubeFrame.grid_columnconfigure(2,weight=1)
+
+        self.ExpcubeCreateButton = tk.Button(self.ExpcubeFrame,
+                                       text="Calculate Exposure Map",relief=tk.GROOVE,
+                                       command=self.expcube_thread)
+        self.ExpcubeCreateButton.grid(column=1,row=0,sticky='EWNS')
+
+        self.ExpcubeLabel = tk.Label(self.ExpcubeFrame,textvariable=self.expcube_file)
+        self.ExpcubeLabel.grid(column=0,row=0,sticky='EWNS')
+
+        self.ExpcubeFrame.grid(column=0,row=3,sticky=tk.N+tk.S+tk.E+tk.W)
+
 
 
         self.set_filter_panel()
@@ -500,7 +544,7 @@ class LatLikeApp(tk.Frame):
         self.SourceTypeMenu.grid(column=3,row=0,sticky='EWNS',padx=1,pady=1)
 
         self.source_template = tk.StringVar()        
-        self.SourceTemplateLabel = tk.Label(self.SourceFrame,text="Type:")
+        self.SourceTemplateLabel = tk.Label(self.SourceFrame,text="Template:")
         self.SourceTemplateLabel.grid(column=4,row=1,sticky='EW',padx=1,pady=1)
         self.source_template.trace("w",self.source_template_change)
         self.SourceTemplateMenu = tk.OptionMenu(self.SourceFrame,self.source_template,"")
@@ -550,8 +594,9 @@ class LatLikeApp(tk.Frame):
         self.ParMinEnt.grid(column=3,row=3,sticky="EWNS",padx=1,pady=1)
 
 
-        self.ParFixCB = tk.Checkbutton(self.SourceFrame,text="fixed",variable=self.par_fixed)
+        self.ParFixCB = tk.Checkbutton(self.SourceFrame,text="free",variable=self.par_fixed)
         self.ParFixCB.grid(column=2,row=1,columnspan=2,sticky='EWN',pady=1)
+        self.par_fixed.trace("w",self.par_fixed_change)
 
         self.set_source_frame()
 
@@ -565,26 +610,26 @@ class LatLikeApp(tk.Frame):
 
         self.LimitsFrame.grid_rowconfigure(0,weight=1)
         self.LimitsFrame.grid_rowconfigure(1,weight=1)
-        self.LimitsFrame.grid_rowconfigure(2,weight=1)
+        self.LimitsFrame.grid_rowconfigure(2,weight=5)
         self.LimitsFrame.grid_rowconfigure(3,weight=1)
-        self.LimitsFrame.grid_rowconfigure(4,weight=1)
+#        self.LimitsFrame.grid_rowconfigure(4,weight=1)
         self.LimitsFrame.grid_columnconfigure(0,weight=1)
         self.LimitsFrame.grid_columnconfigure(1,weight=1)
-#        self.LimitsFrame.grid_columnconfigure(2,weight=1)
+        self.LimitsFrame.grid_columnconfigure(2,weight=1)
 
 
 
         self.ApplyRegionsButton = tk.Button(self.LimitsFrame,
                                         text="Apply",
-                                        command=self.analysis.apply_regions,
+                                        command=self.apply_reg,
                                             relief=tk.GROOVE)
-        self.ApplyRegionsButton.grid(column=0,row=4,columnspan=2,sticky='EW')
+        self.ApplyRegionsButton.grid(column=0,row=3,columnspan=3,sticky='EW')
 
 
-        self.NoneLbl = tk.Label(self.LimitsFrame,text="None:")
-        self.DegLbl = tk.Label(self.LimitsFrame,text="Degrees")
-        self.NormLbl =  tk.Label(self.LimitsFrame,text="Prefactor:")
-        self.AllLbl =  tk.Label(self.LimitsFrame,text="All:")
+        self.NoneLbl = tk.Label(self.LimitsFrame,text="None")
+#        self.DegLbl = tk.Label(self.LimitsFrame,text="Degrees")
+        self.NormLbl =  tk.Label(self.LimitsFrame,text="Prefactor")
+        self.AllLbl =  tk.Label(self.LimitsFrame,text="All")
         self.FreeLbl =  tk.Label(self.LimitsFrame,text="Free Pars")
 
 #        norm_flux_isok_command = self.register(self.norm_flux_isok)
@@ -603,10 +648,10 @@ class LatLikeApp(tk.Frame):
 #        self.SrcRADEntry = tk.Entry(self.RegionsFrame,width=entryw,
 #                           textvariable=self.src_rad_entry,validate='key',
 #                         validatecommand=(src_rad_isok_command,'%d','%s','%P'))
-        self.NoneLbl.grid(column=0,row=1,sticky="EWNS")
-        self.NormLbl.grid(column=0,row=2,sticky="EWNS")
-        self.AllLbl.grid(column=0,row=3,sticky="EWNS")
-        self.FreeLbl.grid(column=0,row=0,sticky="EWNS")
+        self.NoneLbl.grid(column=2,row=1,sticky="EWNS")
+        self.NormLbl.grid(column=1,row=1,sticky="EWNS")
+        self.AllLbl.grid(column=0,row=1,sticky="EWNS")
+        self.FreeLbl.grid(column=0,row=0,columnspan=3,sticky="EWNS")
 #        self.SrcRADEntry.grid(column=1,row=3,sticky="EWNS",pady=8)
 
 
@@ -615,31 +660,53 @@ class LatLikeApp(tk.Frame):
         all_deg_isok_command =  self.register(self.all_deg_isok)
         rad_isok_command =  self.register(self.rad_isok)
 
-        self.NoneDegEntry = tk.Entry(self.LimitsFrame,width=entryw,
-                          textvariable=self.rad_entry,validate='key',
-                          validatecommand=(rad_isok_command,'%d','%s','%P'))
-        self.NormDegEntry = tk.Entry(self.LimitsFrame,width=entryw,
-                          textvariable=self.norm_deg_entry,validate='key',
-                          validatecommand=(norm_deg_isok_command,'%d','%s','%P'))
-        self.AllDegEntry = tk.Entry(self.LimitsFrame,width=entryw,
-                           textvariable=self.all_deg_entry,validate='key',
-                           validatecommand=(all_deg_isok_command,'%d','%s','%P'))
+        if self.analysis.havedata:
+            upper = self.analysis.obs_pars['roi']*1.5
+        else:
+            upper = 0.0
+            
+        self.none_scale = tk.DoubleVar()
 
-        print self.analysis.all_deg,self.analysis.norm_deg,self.analysis.rad            
-        self.norm_deg_entry.set(str(self.analysis.norm_deg)) 
-        self.all_deg_entry.set(str(self.analysis.all_deg))        
-        self.rad_entry.set(str(self.analysis.rad))        
-        print self.analysis.all_deg,self.analysis.norm_deg,self.analysis.rad
+
+        self.NoneScale = tk.Scale(self.LimitsFrame,from_=upper,to=0.0,
+                                  command=self.update_ds9)
+        self.NoneScale.grid(column=2,row=2,sticky='EWNS')
+
+        self.AllScale = tk.Scale(self.LimitsFrame,from_=upper,to=0.0,
+                                 command=self.update_ds9)
+        self.AllScale.grid(column=0,row=2,sticky='EWNS')
+
+        self.NormScale = tk.Scale(self.LimitsFrame,from_=upper,to=0.0,
+                                  command=self.update_ds9)
+        self.NormScale.grid(column=1,row=2,sticky='EWNS')
+
+        self.set_scales()
+
+#        self.NoneDegEntry = tk.Entry(self.LimitsFrame,width=entryw,
+#                          textvariable=self.rad_entry,validate='key',
+#                          validatecommand=(rad_isok_command,'%d','%s','%P'))
+#        self.NormDegEntry = tk.Entry(self.LimitsFrame,width=entryw,
+#                          textvariable=self.norm_deg_entry,validate='key',
+#                          validatecommand=(norm_deg_isok_command,'%d','%s','%P'))
+#        self.AllDegEntry = tk.Entry(self.LimitsFrame,width=entryw,
+#                           textvariable=self.all_deg_entry,validate='key',
+#                           validatecommand=(all_deg_isok_command,'%d','%s','%P'))
+
+ #       print self.analysis.all_deg,self.analysis.norm_deg,self.analysis.rad            
+ #       self.norm_deg_entry.set(str(self.analysis.norm_deg)) 
+ #       self.all_deg_entry.set(str(self.analysis.all_deg))        
+ #       self.rad_entry.set(str(self.analysis.rad))        
+ #       print self.analysis.all_deg,self.analysis.norm_deg,self.analysis.rad
 
 #        self.norm_deg_entry.trace("w",self.set_norm_deg)        
 #        self.all_deg_entry.trace("w",self.set_all_deg)        
 #        self.rad_entry.trace("w",self.set_rad)
 
-        self.DegLbl.grid(column=1,row=0,sticky="EWNS")
+ #       self.DegLbl.grid(column=1,row=0,sticky="EWNS")
 
-        self.NoneDegEntry.grid(column=1,row=1,sticky="EWNS",pady=8)
-        self.NormDegEntry.grid(column=1,row=2,sticky="EWNS",pady=8)
-        self.AllDegEntry.grid(column=1,row=3,sticky="EWNS",pady=8)
+ #       self.NoneDegEntry.grid(column=1,row=1,sticky="EWNS",pady=8)
+ #       self.NormDegEntry.grid(column=1,row=2,sticky="EWNS",pady=8)
+ #       self.AllDegEntry.grid(column=1,row=3,sticky="EWNS",pady=8)
 
 
 
@@ -678,8 +745,8 @@ class LatLikeApp(tk.Frame):
 
         self.LikeFrame1.grid(column=0,row=0,columnspan=3,sticky="EWNS")
 
-        self.LikeScale = tk.Scale(self.LikeFrame1,from_=0,to=10)
-        self.LikeScale.grid(column=0,row=1,sticky='EWNS')
+#        self.LikeScale = tk.Scale(self.LikeFrame1,from_=0,to=10)
+#        self.LikeScale.grid(column=0,row=1,sticky='EWNS')
 
         self.LikeRootnameLabel = tk.Label(self.LikeFrame1,bd=1,
                                                  text="Product directory:")
@@ -690,7 +757,8 @@ class LatLikeApp(tk.Frame):
 
         self.LikeRootnameEntry = tk.Entry(self.LikeFrame1,relief=tk.FLAT,
                                         textvariable=self.rootname_entry,
-                                        disabledforeground="black",state=tk.DISABLED)
+                                          disabledforeground="black")
+
         self.LikeRootnameEntry.grid(column=1,row=0,columnspan=3,sticky='EWNS',pady=2)
 #        self.LcBinLabel = tk.Label(self.LcFrame1,text="Likelihood")
 #        self.LcBinLabel.grid(column=0,row=2,sticky='EWNS',pady=2)
@@ -713,6 +781,32 @@ class LatLikeApp(tk.Frame):
 #        self.LcShowBtn = tk.Button(self.LcFrame,text="Show Lightcurve",
 #                                   relief=tk.GROOVE,command=self.plot_lc)
 #        self.LcShowBtn.grid(column=1,row=1,sticky='EWNS')
+
+
+
+
+# Frame for exposure map (gtexpcube2)
+
+        self.SrcmapFrame = tk.LabelFrame(self.LikeFrame,bd=1,
+                                    relief=tk.GROOVE,
+                                    text="Source Map")
+
+        self.SrcmapFrame.grid_columnconfigure(0,weight=1)
+        self.SrcmapFrame.grid_columnconfigure(1,weight=1)
+        self.SrcmapFrame.grid_columnconfigure(2,weight=1)
+
+        self.SrcmapCreateButton = tk.Button(self.SrcmapFrame,
+                                       text="Calculate Source Map",relief=tk.GROOVE,
+                                       command=self.srcmap_thread)
+        self.SrcmapCreateButton.grid(column=1,row=0,sticky='EWNS')
+
+        self.SrcmapLabel = tk.Label(self.SrcmapFrame,textvariable=self.srcmap_file)
+        self.SrcmapLabel.grid(column=0,row=0,sticky='EWNS')
+
+        self.SrcmapFrame.grid(column=0,row=3,sticky=tk.N+tk.S+tk.E+tk.W)
+
+
+
         self.LikeRunBtn = tk.Button(self.LikeFrame,
                                   text="Run Likelihood",
                                   relief=tk.GROOVE,
@@ -991,6 +1085,24 @@ class LatLikeApp(tk.Frame):
         self.NavLikelihoodBtn["text"] = "Likelihood"
         self.NavSettingsBtn["text"] = "Settings"
 
+
+    def update_ds9(self,*args):
+        
+
+        a = min(self.AllScale.get(),self.NormScale.get())
+        n = max(self.NormScale.get(),self.NoneScale.get())
+        norm = max(self.AllScale.get(),min(n,self.NormScale.get()))
+
+        self.analysis.none_deg = n
+        self.analysis.all_deg = a
+        self.analysis.norm_deg = norm
+        self.AllScale.set(a)
+        self.NormScale.set(norm)
+        self.NoneScale.set(n)
+
+        self.show_cat_sources()
+
+
     def nav_model_btn(self):
        
         self.ModelFrame.lift()
@@ -1025,32 +1137,54 @@ class LatLikeApp(tk.Frame):
     def set_source_frame(self):
         
         if self.analysis.havedata and len(self.analysis.SourceList):
-            nm = self.analysis.selected_source.name
-            if self.analysis.selected_source.assoc_name != "": 
-                nm = self.analysis.selected_source.assoc_name
+            selsrc = self.analysis.SourceList[self.analysis.selected_source]
+
+            self.logit(selsrc.name)
+            nm = selsrc.name
+            if selsrc.assoc_name != "": 
+                nm = selsrc.assoc_name
             self.cat_source.set(nm)
-            self.source_model.set(self.analysis.selected_source.model)
-            self.source_type.set(self.analysis.selected_source.type)
-            if self.analysis.selected_source.type == "diffuse":
+            self.source_model.set(selsrc.model)
+            self.source_type.set(selsrc.type)
+            self.model_parameter.set(selsrc.pars.keys()[0])
+
+            if selsrc.type != "SkyDirFunction":
                 self.SourceTemplateMenu["state"] = tk.NORMAL
-                self.source_template.set(self.analysis.selected_source.template)
+                self.source_template.set(selsrc.template)
             else:
                 self.source_template.set('')
                 self.SourceTemplateMenu["state"] = tk.DISABLED
 
+                
+#            for s in [self.analysis.SourceList[self.analysis.selected_source]:
+#            self.logit(self.analysis.selected_source)
+            for p in self.analysis.SourceList[self.analysis.selected_source].pars: 
+                self.logit("Par: %s = %s %i"%(self.analysis.SourceList[self.analysis.selected_source].pars[p].name,
+                                              self.analysis.SourceList[self.analysis.selected_source].pars[p].value,
+                                              self.analysis.SourceList[self.analysis.selected_source].pars[p].fixed))
+                    
+                
 
-            self.populate_model_pars_menu()
-            self.set_par()
+#            self.populate_model_pars_menu()
+#            self.set_par()
 
 
     def set_par(self):
 
-        if self.analysis.havedata and len(self.analysis.SourceList):        
-            self.model_par_value.set(str(self.analysis.selected_source.pars[self.model_parameter.get()].value))
-            self.model_par_scale.set(str(self.analysis.selected_source.pars[self.model_parameter.get()].scale))
-            self.par_min_value.set(str(self.analysis.selected_source.pars[self.model_parameter.get()].min))
-            self.par_max_value.set(str(self.analysis.selected_source.pars[self.model_parameter.get()].max))
-        
+        if self.analysis.havedata and len(self.analysis.SourceList):
+            selsrc = self.analysis.SourceList[self.analysis.selected_source]
+            par = self.model_parameter.get()
+#            self.logit("%s %s %s"%(par,self.analysis.selected_source,selsrc.name))
+            self.model_par_value.set(str(selsrc.pars[par].value))
+            self.model_par_scale.set(str(selsrc.pars[par].scale))
+            self.par_min_value.set(str(selsrc.pars[par].min))
+            self.par_max_value.set(str(selsrc.pars[par].max))
+            self.par_fixed.set(selsrc.pars[par].fixed)
+#            if self.analysis.selected_source.pars[par].fixed == 1: self.par_fixed.set(0)      
+#            if self.analysis.selected_source.pars[par].fixed == 0: self.par_fixed.set(1)
+#            for p in self.analysis.selected_source.pars:
+#                pa = self.analysis.selected_source.pars[p]
+#                self.logit("%s %i"%(p,pa.fixed))
 
 
     def set_settings_panel(self):
@@ -1122,6 +1256,8 @@ class LatLikeApp(tk.Frame):
         self.ltcube_file.set(self.analysis.ltcube)
         self.filtered_events.set(self.analysis.evfile)
         self.image_file.set(self.analysis.image)
+        self.ccube_file.set(self.analysis.ccube)
+        self.expcube_file.set(self.analysis.expcube)
 
 
     def set_model_panel(self):
@@ -1135,6 +1271,8 @@ class LatLikeApp(tk.Frame):
         self.all_deg_entry.set("{:.3f}".format(self.analysis.all_deg))
     
     def set_like_panel(self,*arg):
+
+        self.srcmap_file.set(self.analysis.srcmap)
         
         pass
 
@@ -1171,14 +1309,14 @@ class LatLikeApp(tk.Frame):
 
 
 
-    def set_rad(self):
-        self.analysis.rad = float(self.rad_entry.get())
+#    def set_rad(self):
+#        self.analysis.rad = float(self.rad_entry.get())
 
-    def set_norm_deg(self):
-        self.norm_deg = float(self.norm_deg_entry.get())
+#    def set_norm_deg(self):
+#        self.norm_deg = float(self.norm_deg_entry.get())
 
-    def set_all_deg(self):
-        self.all_deg = float(self.all_deg_entry.get())
+#    def set_all_deg(self):
+#        self.all_deg = float(self.all_deg_entry.get())
 
 
     def logerr_to_text(self,s):
@@ -1490,9 +1628,10 @@ class LatLikeApp(tk.Frame):
         try:
             self.CatSourceMenu["menu"].delete(0, tk.END)
 
-            for s in self.analysis.SourceList: 
-                n = s.name
-                if s.assoc_name != "": n = s.assoc_name
+            for s in self.analysis.SourceList:
+                src = self.analysis.SourceList[s]
+                n = src.name
+                if src.assoc_name != "": n = src.assoc_name
                 self.CatSourceMenu["menu"].add_command(label=n, 
                                         command=lambda temp = n: 
                                         self.CatSourceMenu.setvar(self.CatSourceMenu.cget("textvariable"), value = temp))
@@ -1542,7 +1681,7 @@ class LatLikeApp(tk.Frame):
         if not self.analysis.havedata or len(self.analysis.SourceList) == 0:
             return
 
-        for p in self.analysis.selected_source.pars:
+        for p in self.analysis.SourceList[self.analysis.selected_source].pars:
             self.ModParMenu["menu"].add_command(label=p,
                          command=lambda temp = p: 
                          self.ModParMenu.setvar(self.ModParMenu.cget("textvariable"),
@@ -1574,13 +1713,8 @@ class LatLikeApp(tk.Frame):
         self.SourceTypeMenu["menu"].delete(0, tk.END)
 
 
-        s = "point"
-        self.SourceTypeMenu["menu"].add_command(label=s, 
-                   command=lambda temp = s: 
-                   self.SourceTypeMenu.setvar(self.SourceTypeMenu.cget("textvariable"),
-                                                                  value = temp))
-        s = "diffuse"
-        self.SourceTypeMenu["menu"].add_command(label=s,command=lambda temp = s: 
+        for s in ["SkyDirFunction","SpatialMap","MapCubeFunction","ConstantValue"]:
+            self.SourceTypeMenu["menu"].add_command(label=s,command=lambda temp = s: 
                                         self.SourceTypeMenu.setvar(self.SourceTypeMenu.cget("textvariable"),
                                                                   value = temp))
 #            if s[0:self.analysis.irfs.__len__()] == self.analysis.irfs:
@@ -1588,6 +1722,12 @@ class LatLikeApp(tk.Frame):
 #                self.irfs.set(s)
  
 
+    def set_scales(self):
+
+        self.NoneScale.set(self.analysis.none_deg)
+        self.AllScale.set(self.analysis.all_deg)
+        self.NormScale.set(self.analysis.norm_deg)
+        
     def irfs_change(self,*arg):
 
         st = self.irfs.get()
@@ -1597,25 +1737,31 @@ class LatLikeApp(tk.Frame):
 
 
     def source_template_change(self,*args):
+        
+        self.analysis.SourceList[self.analysis.selected_source].template = self.source_template.get()
 
         pass
 
     def source_model_change(self,*arg):
         
-        pars = self.analysis.default_pars(self.source_model.get())
-#        print pars
-        self.analysis.selected_source.pars = pars
-        pset = False
-        if ('Prefactor' in pars):
-            self.model_parameter.set('Prefactor')
-            pset = True
-        elif ('index' in pars) and not pset:
-            self.model_parameter.set('index')
-            pset = True
-        elif ('alpha' in pars) and not pset:
-            self.model_parameter.set('alpha')
+        model = self.source_model.get()
+#        selsrc = self.analysis.SourceList[self.analysis.selected_source]
+        if not self.analysis.SourceList[self.analysis.selected_source].model == model:
+            self.analysis.SourceList[self.analysis.selected_source].model = model
+#            print "model change"
+            self.analysis.SourceList[self.analysis.selected_source].pars = self.analysis.default_pars(model)
+
+#        pset = False
+#        if ('Prefactor' in self.analysis.SourceList[self.analysis.selected_source].pars):
+        self.model_parameter.set(self.analysis.SourceList[self.analysis.selected_source].pars.keys()[0])
+#            pset = True
+#        elif ('index' in self.analysis.SourceList[self.analysis.selected_source].pars) and not pset:
+#            self.model_parameter.set('index')
+#            pset = True
+#        elif ('alpha' in self.analysis.SourceList[self.analysis.selected_source].pars) and not pset:
+#            self.model_parameter.set('alpha')
         self.populate_model_pars_menu()
-        self.set_par()
+#        self.set_par()
 
 
     def model_par_change(self,*arg):
@@ -1625,13 +1771,21 @@ class LatLikeApp(tk.Frame):
 
     def source_type_change(self,*arg):
         
-        self.analysis.selected_source.type = self.source_type.get()   
-        if self.analysis.selected_source.type == "diffuse":
+
+        selsrc = self.analysis.SourceList[self.analysis.selected_source]
+        selsrc.type = self.source_type.get()   
+
+        if selsrc.type in ["SpatialMap","MapCubeFunction","ConstantValue"]:
             self.SourceTemplateMenu["state"] = tk.NORMAL
-            self.source_template.set(self.analysis.selected_source.template)
+            self.source_template.set(selsrc.template)
         else:
             self.source_template.set('')
             self.SourceTemplateMenu["state"] = tk.DISABLED    
+
+
+    def par_fixed_change(self,*arg):
+        
+        self.analysis.SourceList[self.analysis.selected_source].pars[self.model_parameter.get()].fixed = self.par_fixed.get()
 
     def cat_source_change(self,*arg):
 
@@ -1643,11 +1797,12 @@ class LatLikeApp(tk.Frame):
         sname = self.cat_source.get()
 
         for s in self.analysis.SourceList:
-            if s.name == sname or s.assoc_name == sname:
+            src = self.analysis.SourceList[s]
+            if src.name == sname or src.assoc_name == sname:
                 self.analysis.selected_source = s
-        print sname,self.analysis.selected_source.name,self.analysis.selected_source.assoc_name
-        self.analysis.selected_ra = self.analysis.selected_source.ra
-        self.analysis.selected_dec = self.analysis.selected_source.dec
+#        print sname,self.analysis.selected_source.name,self.analysis.selected_source.assoc_name
+        self.analysis.selected_ra = self.analysis.SourceList[self.analysis.selected_source].ra
+        self.analysis.selected_dec = self.analysis.SourceList[self.analysis.selected_source].dec
         
         self.analysis.set_names()
 
@@ -1660,22 +1815,6 @@ class LatLikeApp(tk.Frame):
         self.show_cat_sources()
         self.set_source_frame()
 
-        try:
-            self.xs_proc.terminate()
-            self.xs_proc.kill()
-        except:
-            pass
-
-        try:
-            self.xspec_proc.terminate()
-            self.xspec_proc.kill()
-            self.XspecRunButton["text"] = "Start Xspec"
-            self.SourceCountsButton["text"] = "Show counts spectrum/background"
-            self.lcplot_proc.terminate()
-            self.LcShowBtn["text"] = "Show Lightcurve"
-            
-        except:
-            pass        
 
         return
 
@@ -1691,6 +1830,7 @@ class LatLikeApp(tk.Frame):
                 lget = subprocess.call(["xpaset","-p",self.analysis.ds9id,"regions","delete","all"])
                 lget = subprocess.call(["xpaset","-p",self.analysis.ds9id,
                                         "regions","file",self.analysis.basename+'.reg'])
+
 
 
 
@@ -2166,10 +2306,12 @@ class LatLikeApp(tk.Frame):
 
 
         if run:
-            self.logblue("Starting lightcurve calculation.")
+
+            self.analysis.write_xml_model()
+            self.logblue("Starting likelihood calculation.")
 
 #            lcf = self.lc_file.get()
-            lcf = self.analysis.name+'_'+self.lc_bin.get()+'.lc'
+#             lcf = self.analysis.name+'_'+self.lc_bin.get()+'.lc'
 
             pl_free = True
             if self.lc_index_fixed.get(): pl_free = False
@@ -2488,6 +2630,7 @@ class LatLikeApp(tk.Frame):
                 if ( abs(self.analysis.selected_ra - selra)>tol):
                     chk = True
                     selra = self.analysis.selected_ra
+                    seldec = self.analysis.selected_dec
 #                    self.src_rad_entry.set("{:.3f}".format(lrad))
 #                    sn,sd,sassn,res = get_closest_fgl_asssource(self.analysis.ra,
 #                                      self.analysis.dec,self.analysis.catalog)
@@ -2495,6 +2638,7 @@ class LatLikeApp(tk.Frame):
                 if  ( abs(self.analysis.selected_dec - seldec)>tol):
                     chk = True
                     seldec = self.analysis.selected_dec
+                    selra = self.analysis.selected_ra
 #                if ( abs(self.analysis.bkg_dec - lbdec)>tol): 
 #                    lbdec = self.analysis.bkg_dec
 #                    self.bkg_dec_entry.set("{:.3f}".format(lbdec))
@@ -2504,7 +2648,11 @@ class LatLikeApp(tk.Frame):
 
 #                self.analysis.set_names()
 #                self.rootname_entry.set(self.analysis.name)
-                if chk: self.catsourceid()
+                if chk:
+                    print "Check"
+                    self.catsourceid()
+                    self.set_scales()
+
 #                    print self.cat_source.get()
         self.analysis.set_names()
         self.set_spectrum_panel()
@@ -2517,8 +2665,13 @@ class LatLikeApp(tk.Frame):
 
         distance = self.analysis.rad
         for s in self.analysis.SourceList:
-            d = sdist(s.ra,s.dec,self.analysis.selected_ra,
-                     self.analysis.selected_dec)
+            src = self.analysis.SourceList[s]
+#            d = sdist(s.ra,s.dec,self.analysis.selected_ra,
+#                     self.analysis.selected_dec)
+#            d = sdist(s.ra,s.dec,self.analysis.selected_ra,
+#                     self.analysis.selected_dec)
+            d = abs(src.ra-self.analysis.selected_ra)+\
+                      +abs(self.analysis.selected_dec-src.dec)
             if d < distance and d < self.analysis.dist_tres:
                 self.analysis.selected_source = s
                 distance = d
@@ -2527,6 +2680,16 @@ class LatLikeApp(tk.Frame):
         self.skipch = True
         self.set_source_frame()
         self.skipch = False
+
+
+
+    def apply_reg(self):
+        
+        self.analysis.initsources()
+        self.show_cat_sources()
+        self.populate_cat_source_menu()
+        self.set_par()
+        self.logit("N Sources %i"%len(self.analysis.SourceList))
 
     def get_regions(self):
         
@@ -2756,6 +2919,297 @@ class LatLikeApp(tk.Frame):
         self.set_filter_panel()
         
         self.ImageCreateButton["state"] = tk.NORMAL
+        return
+
+
+
+    def ccube_thread(self):
+        
+        """Defines and starts 3D count map extraction thread."""
+        
+        self.cc_thread = threading.Thread(target=self.create_ccube,args=())
+        self.cc_thread.start()
+        
+    def create_ccube(self):
+        
+        from string import join
+        
+        """Performs 3D count map extraction. Called from ccube_thread thread."""
+
+        if not self.analysis.havedata:
+            self.nodata()
+            return -1 
+
+
+        if not os.path.exists(self.analysis.evfile):
+            self.logerr("Event file is not available. Use \"Filter Events\" to create one.")
+            return
+
+        self.CcubeCreateButton["state"] = tk.DISABLED
+        self.logit("****RUNNING GTBIN TO CREATE CCUBE ******")
+        binsz = float(self.binsz_entry.get())
+        npics = int(self.analysis.obs_pars['roi']*sqrt(2.0)/binsz)
+        self.logit(join(["    Parameters:","    algorithm=CCUBE","    ebinalg=LOG",
+                                    "    scfile="+self.analysis.scfile,
+                                    "    evfile="+self.analysis.evfile,
+                                    "    outfile="+self.analysis.basename+'_ccube.fits',
+                                    "    tstart="+str(self.analysis.tmin),
+                                    "    tstop="+str(self.analysis.tmax),
+                                    "    emin="+str(self.analysis.emin),
+                                    "    emax="+str(self.analysis.emax),
+                                    "    nxpix="+str(npics),"    nypix="+str(npics),
+                                    "    binsz="+str(binsz),"    xref="+str(self.analysis.ra),
+                                    "    yref="+str(self.analysis.dec),"    axisrot=0.0",
+                                    "    proj=STG","    coordsys=CEL",
+                                    "    enumbins="+str(self.analysis.nchans),
+                                    "    chatter="+str(self.analysis.chatter)],"\n"))
+        self.ccube_file.set("calculating...")
+        self.CcubeLabel.update()
+#        time.sleep(0.05)
+#        try:
+
+        self.analysis.ra  = self.analysis.obs_pars["RA"]
+        self.analysis.dec = self.analysis.obs_pars["DEC"]
+
+#        out = self.analysis.runevtbin(alg="CMAP",
+#                                      outfile=self.analysis.basename+'_roi.fits')
+        gtbinerr = False
+        process = subprocess.Popen(["gtbin","algorithm=CCUBE","ebinalg=LOG",
+                                    "scfile="+self.analysis.scfile,
+                                    "evfile="+self.analysis.evfile,
+                                    "outfile="+self.analysis.basename+'_ccube.fits',
+                                    "tstart="+str(self.analysis.tmin),
+                                    "tstop="+str(self.analysis.tmax),
+                                    "emin="+str(self.analysis.emin),
+                                    "emax="+str(self.analysis.emax),
+                                    "nxpix="+str(npics),"nypix="+str(npics),
+                                    "binsz="+str(binsz),"xref="+str(self.analysis.ra),
+                                    "yref="+str(self.analysis.dec),"axisrot=0.0",
+                                    "proj=STG","coordsys=CEL",
+                                    "enumbins="+str(self.analysis.nchans),
+                                    "chatter="+str(self.analysis.chatter)],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+    
+
+#       except:
+        catchError = "at the top level:"
+        for line in process.stdout:
+            self.logit("CCUBE EXTRACTION:"+line)
+            if line.find(catchError) != -1:
+                gtbinerr = True
+        for line in process.stderr:
+            self.logit("CCUBE EXTRACTION:"+line)
+            if line.find(catchError) != -1:
+                gtbinerr = True
+        
+        if (gtbinerr):
+            self.logerr("ERROR DURING GTBIN EXECUTION!")
+            self.analysis.image = "None"
+        
+        
+        if os.path.exists(self.analysis.basename+'_ccube.fits'):
+            self.analysis.ccube = self.analysis.basename+'_ccube.fits'
+            self.logit("3D count cube file: "+self.analysis.basename+"_ccube.fits created.")
+            self.logblue("Finished extracting CCUBE.")
+#            self.logblue("Press \"Run ds9\" to explore the image and edit extraction regions.")
+#            self.analysis.ccube = self.analysis.basename+'_image.fits'
+
+        self.set_filter_panel()
+        
+        self.CcubeCreateButton["state"] = tk.NORMAL
+        return
+
+    def expcube_thread(self):
+        
+        """Defines and starts 3D count map extraction thread."""
+        
+        self.em_thread = threading.Thread(target=self.create_expcube,args=())
+        self.em_thread.start()
+        
+    def create_expcube(self):
+        
+        from string import join
+        
+        """Performs 3D count map extraction. Called from ccube_thread thread."""
+
+        if not self.analysis.havedata:
+            self.nodata()
+            return -1 
+
+
+        if not os.path.exists(self.analysis.evfile):
+            self.logerr("Event file is not available. Use \"Filter Events\" to create one.")
+            return
+
+        if not os.path.exists(self.analysis.ltcube):
+            self.logerr("Ltcube is not available. Use \"Run GTLTcube\" to create one.")
+            return
+
+        self.ExpcubeCreateButton["state"] = tk.DISABLED
+        self.logit("****RUNNING GTEXPCUBE2 TO CREATE CCUBE ******")
+        binsz = float(self.binsz_entry.get())
+        npics = int((self.analysis.obs_pars['roi']+20.0)*sqrt(2.0)/binsz)
+        self.logit(join(["    Parameters:",
+                         "    infile="+self.analysis.ltcube,
+                         "    ebinalg=LOG",
+                                    "    outfile="+self.analysis.basename+'_expcube.fits',
+                                    "    irfs="+self.analysis.irfs,                                    
+                                    "    emin="+str(self.analysis.emin),
+                                    "    emax="+str(self.analysis.emax),
+                                    "    nxpix="+str(npics),"    nypix="+str(npics),
+                                    "    binsz="+str(binsz),"    xref="+str(self.analysis.ra),
+                                    "    yref="+str(self.analysis.dec),"    axisrot=0.0",
+                                    "    proj=STG","    coordsys=CEL",
+                                    "    enumbins="+str(self.analysis.nchans),
+                                    "    chatter="+str(self.analysis.chatter)],"\n"))
+        self.expcube_file.set("calculating...")
+        self.ExpcubeLabel.update()
+#        time.sleep(0.05)
+#        try:
+
+        self.analysis.ra  = self.analysis.obs_pars["RA"]
+        self.analysis.dec = self.analysis.obs_pars["DEC"]
+
+#        out = self.analysis.runevtbin(alg="CMAP",
+#                                      outfile=self.analysis.basename+'_roi.fits')
+        gtbinerr = False
+        process = subprocess.Popen(["gtexpcube2","infile="+self.analysis.ltcube,
+                                    "cmap=none",
+                                    "outfile="+self.analysis.basename+'_expcube.fits',
+                                    "irfs="+self.analysis.irfs, 
+                                    "emin="+str(self.analysis.emin),
+                                    "emax="+str(self.analysis.emax),
+                                    "nxpix="+str(int(360.0/binsz)),"nypix="+str(int(180.0/binsz)),
+#                                    "nxpix="+str(npics),"nypix="+str(npics),
+                                    "binsz="+str(binsz),"xref="+str(self.analysis.ra),
+                                    "yref="+str(self.analysis.dec),"axisrot=0.0",
+                                    "proj=STG","coordsys=CEL",
+                                    "enumbins="+str(self.analysis.nchans),
+                                    "chatter="+str(self.analysis.chatter)],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+    
+
+#       except:
+        catchError = "at the top level:"
+        for line in process.stdout:
+            self.logit("EXPCUBE EXTRACTION:"+line)
+            if line.find(catchError) != -1:
+                gtbinerr = True
+        for line in process.stderr:
+            self.logit("EXPCUBE EXTRACTION:"+line)
+            if line.find(catchError) != -1:
+                gtbinerr = True
+        
+        if (gtbinerr):
+            self.logerr("ERROR DURING GTEXPCUBE2 EXECUTION!")
+            self.analysis.image = "None"
+        
+        
+        if os.path.exists(self.analysis.basename+'_expcube.fits'):
+            self.analysis.xpcube = self.analysis.basename+'_expcube.fits'
+            self.logit("Exposure map file: "+self.analysis.basename+"_expcube.fits created.")
+            self.logblue("Finished extracting EXPCUBE.")
+#            self.logblue("Press \"Run ds9\" to explore the image and edit extraction regions.")
+#            self.analysis.ccube = self.analysis.basename+'_image.fits'
+
+        self.set_filter_panel()
+        
+        self.ExpcubeCreateButton["state"] = tk.NORMAL
+        return
+
+    def srcmap_thread(self):
+        
+        """Defines and starts 3D count map extraction thread."""
+        
+        self.sm_thread = threading.Thread(target=self.create_srcmap,args=())
+        self.sm_thread.start()
+        
+    def create_srcmap(self):
+        
+        from string import join
+        
+        """Performs 3D count map extraction. Called from srcmap_thread thread."""
+
+        if not self.analysis.havedata:
+            self.nodata()
+            return -1 
+
+
+        if not os.path.exists(self.analysis.scfile):
+            self.logerr("SC file is not available.")
+            return
+
+        if not os.path.exists(self.analysis.ltcube):
+            self.logerr("Ltcube is not available. Use \"Run GTLTcube\" to create one.")
+            return
+
+        if not os.path.exists(self.analysis.ccube):
+            self.logerr("3D map is not available. Use \"Extract 3D Map\" to create one.")
+            return
+
+        if not os.path.exists(self.analysis.expcube):
+            self.logerr("Expcube is not available. Use \"Extract Exposure Map\" to create one.")
+            return
+
+        self.SrcmapCreateButton["state"] = tk.DISABLED
+        self.logit("****RUNNING GTSCRMAPS TO CREATE Source Map ******")
+
+        self.logit(join(["    Parameters:",
+                                    "    expcube="+self.analysis.ltcube,
+                                    "    cmap="+self.analysis.ccube,
+                                    "    outfile="+self.analysis.basename+'_srcmap.fits',
+                                    "    srcmdl="+self.analysis.model_file,
+                                    "    irfs="+self.analysis.irfs,                            
+                                    "    bexpmap="+self.analysis.expcube,
+                                    "    chatter="+str(self.analysis.chatter)],"\n"))
+        self.srcmap_file.set("calculating...")
+        self.SrcmapLabel.update()
+        self.analysis.write_xml_model()
+#        time.sleep(0.05)
+#        try:
+
+#                                      outfile=self.analysis.basename+'_roi.fits')
+        gtbinerr = False
+        process = subprocess.Popen(["gtsrcmaps",
+                                    "expcube="+self.analysis.ltcube,
+                                    "cmap="+self.analysis.ccube,
+                                    "outfile="+self.analysis.basename+'_srcmap.fits',
+                                    "irfs="+self.analysis.irfs, 
+                                    "srcmdl="+self.analysis.model_file,
+                                    "bexpmap="+self.analysis.expcube,
+                                    "chatter="+str(self.analysis.chatter)],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+    
+
+#       except:
+        catchError = "at the top level:"
+        for line in process.stdout:
+            self.logit("SRCMAP EXTRACTION:"+line)
+            if line.find(catchError) != -1:
+                gtbinerr = True
+        for line in process.stderr:
+            self.logit("SRCMAP EXTRACTION:"+line)
+            if line.find(catchError) != -1:
+                gtbinerr = True
+        
+        if (gtbinerr):
+            self.logerr("ERROR DURING GTEXPCUBE2 EXECUTION!")
+            self.analysis.image = "None"
+        
+        
+        if os.path.exists(self.analysis.basename+"_srcmap.fits"):
+            self.analysis.srcmap = self.analysis.basename+"_srcmap.fits"
+            self.logit("Exposure map file: "+self.analysis.basename+"_srcmap.fit created.")
+            self.logblue("Finished extracting EXPCUBE.")
+#            self.logblue("Press \"Run ds9\" to explore the image and edit extraction regions.")
+#            self.analysis.ccube = self.analysis.basename+'_image.fits'
+
+        self.set_like_panel()
+        
+        self.ExpcubeCreateButton["state"] = tk.NORMAL
         return
 
 

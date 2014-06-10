@@ -25,6 +25,8 @@ __version__ = '1.0'
 
 import sys
 import os
+from numpy import sort,array,floor,log10
+from coorconv import sdist
 
 
 class LatLike:
@@ -70,9 +72,15 @@ class LatLike:
         self.dcostheta = 0.05
         self.chatter = verbosity
         self.ltcube = "None"
+        self.cmap = "None"
+        self.expcube = "None"
+        self.srcmap = "None"
+        self.model_file =  self.basename+'_model.xml'
         self.datapath = os.getcwd()
         self.datapath = datapath
+        self.nchans = int(30)
         self.templates_path = ""
+        self.SourceList = {}
         
 
         self.ds9 = False
@@ -219,7 +227,8 @@ class LatLike:
             
 
     def set_names(self):
-        from fgltools import get_closest_fgl_source
+
+#        from fgltools import get_closest_fgl_source
 
         """
         Performs some data and variable check and sets some flags. 
@@ -229,12 +238,21 @@ class LatLike:
 
 
         self.ltcube = "None"
+        self.ccube = "None"
+        self.expcube = "None"
+        self.srcmap = "None"
         self.evfile = "None"
         self.image = "None"
 
 
         if os.path.exists(self.basename+'_ltcube.fits'): 
             self.ltcube = self.basename+'_ltcube.fits'
+        if os.path.exists(self.basename+'_ccube.fits'): 
+            self.ccube = self.basename+'_ccube.fits'
+        if os.path.exists(self.basename+'_srcmap.fits'): 
+            self.srcmap = self.basename+'_srcmap.fits'
+        if os.path.exists(self.basename+'_expcube.fits'): 
+            self.expcube = self.basename+'_expcube.fits'
         if os.path.exists(self.basename+'_filtered_gti.fits'): 
             self.evfile = self.basename+'_filtered_gti.fits'
         if os.path.exists(self.basename+'_image.fits'): 
@@ -294,20 +312,29 @@ class LatLike:
         if self.havedata: 
             self.ra = self.obs_pars['RA']
             self.dec = self.obs_pars['DEC']
-            self.norm_deg = self.obs_pars['roi']
 
-            self.all_deg = self.obs_pars['roi']*0.5
+            self.none_deg = self.obs_pars['roi']+5.0
+            self.norm_deg = self.obs_pars['roi']*0.5
+            self.all_deg = self.obs_pars['roi']*0.2
 
 
-            self.rad = self.obs_pars['roi']*1.2
+            self.rad = self.obs_pars['roi']
 
 
 #            self.norm_flux = 1.0e-10
 #            self.all_flux = 1.0e-9
 #            self.show_flux = 1.0e-9
 
+#            self.selected_source = ""
             self.initsources()
 
+            if len(self.SourceList):
+#                self.selected_source = self.SourceList[self.SourceList.keys()[0]]                                    
+                self.selected_source = self.SourceList.keys()[0]
+                self.selected_ra = self.SourceList[self.selected_source].ra
+                self.selected_dec = self.SourceList[self.selected_source].dec
+
+#            self.initsources()
 
 
         return ret
@@ -380,10 +407,20 @@ class LatLike:
         
         from fgltools import sdist
         import pyfits
-
-        self.SourceList = []
+        
+        
+        errors = []
+#        self.SourceList[:] = []
         
         if self.haveCatalog == True:
+
+#       Getting list of templates
+
+            templates = []
+            for (dirpath, dirnames, filenames) in os.walk(self.templates_path):
+                templates.extend(filenames)
+#----------------------------------------------------                
+
             fglf = pyfits.open(self.catalog)
             source = fglf[1].data.field('Source_name')
             assoc1 = fglf[1].data.field('ASSOC1')
@@ -391,7 +428,7 @@ class LatLike:
             dec = fglf[1].data.field('DEJ2000')
             model = fglf[1].data.field('SpectrumType')
             flux = fglf[1].data.field('Flux1000')
-            pl_index =  fglf[1].data.field('PowerLaw_Index')
+            pl_index =  fglf[1].data.field('Spectral_Index')
             beta =  fglf[1].data.field('beta')
             cutoff =  fglf[1].data.field('Cutoff')
             eb =  fglf[1].data.field('Pivot_Energy')
@@ -401,7 +438,9 @@ class LatLike:
 #                         and sdist(ra[i],dec[i],self.ra,self.dec)<self.all_deg \
 #                         and flux[i]>self.all_flux and flux[i]<1.0]
             inds = [ i for i in range(len(source)) if \
-                         sdist(ra[i],dec[i],self.ra,self.dec)<self.rad ]
+                         sdist(ra[i],dec[i],self.ra,self.dec)<self.none_deg and source[i] not in self.SourceList ]
+
+
 
             ext_sn =  fglf[1].data.field('Extended_Source_Name')
             ext_sn4 =  fglf[4].data.field('Source_Name')
@@ -409,56 +448,241 @@ class LatLike:
 
             for i in inds:
                 dist = sdist(ra[i],dec[i],self.ra,self.dec)
-                pars = {}
                 mod = model[i]
-                pars = self.default_pars(mod,index=pl_index[i],eb=eb[i],beta=beta[i],cut=cutoff[i])
-                source_type = "point"
+                pars = self.default_pars(mod,index=pl_index[i],
+                                         eb=eb[i],beta=beta[i],cut=cutoff[i],f=flux[i])
+                source_type = "SkyDirFunction"
                 sn = source[i]
+                if assoc1[i].strip() != "": sn = assoc1[i].strip()
                 mfil = "" 
                 if ext_sn[i].strip() != "":
-                    source_type = "extended"
+                    source_type = "SpatialMap"
+                    sn = ext_sn[i]
                     for j in range(len(ext_sn4)):
-                        if source[i] == ext_sn4[j]:
+                        if ext_sn[i] == ext_sn4[j]:
                             mfil = ext_file[j]
+                            if mfil not in templates: errors.append("Template file %s is not in templates."%mfil)
+                            break
+                    
+                sss = LatSource(sn,ra[i],dec[i],source_type,mod,pars,
+                                mfil,flux[i],assoc1[i])
 
-                sss = LatSource(sn,ra[i],dec[i],source_type,mod,pars,mfil,flux[i],assoc1[i])
-                self.SourceList.append(sss)
-            
-                
-            if len(self.SourceList):
-                self.selected_source = self.SourceList[0]
-                self.selected_ra = self.selected_source.ra
-                self.selected_dec = self.selected_source.dec
-            
-#            print self.rad,self.all_deg,self.norm_deg
+                self.SourceList[source[i]] = sss
                 
 
-    def default_pars(self,model,index=2.0,eb=300.0,beta=1000.0,cut=1000.0):
+
+            dels = []
+
+# delete source outside outer radius limit (self.none_deg)
+            for s in self.SourceList:
+
+                src = self.SourceList[s]
+                if sdist(src.ra,src.dec,self.ra,self.dec)>self.none_deg: dels.append(s)
+
+            for s in dels:  del self.SourceList[s]
+
+
+            for s in self.SourceList:
+
+                src = self.SourceList[s]
+                d = sdist(src.ra,src.dec,self.ra,self.dec)                
+
+                for p in src.pars:
+                    src.pars[p].fixed = 0
+
+                if (d<self.norm_deg):
+                    try:
+                        src.pars["Prefactor"].fixed = 1
+                    except:
+                        pass
+
+
+                if (d<self.all_deg):
+
+                    for p in src.pars:
+                        src.pars[p].fixed = 1
+                
+
+
+
+            reselect = False
+
+            try:
+                if sdist(self.ra,self.dec,
+                     self.SourceList[self.selected_source].ra,
+                     self.SourceList[self.selected_source].dec)>self.none_deg: reselect = True
+            except:
+               pass     
+
+#            for i in range(len(source)):
+
+#                d = sdist(ra[i],dec[i],self.ra,self.dec)
+                        
+
+
+            if reselect: 
+#                print "reselct"
+                self.selected_source = self.SourceList.keys()[0] 
+                self.selected_ra = self.SourceList[self.selected_source].ra
+                self.selected_dec = self.SourceList[self.selected_source].dec
+
+# adding Galactic Diffuse Emission
+            
+            xxx = [templates[i] for i in  xrange(len(templates)) if templates[i][:3] == "gll"]
+            if len(xxx): 
+                gd_template = xxx[0]
+            else:
+                gd_template = ""
+                errors.append("Failed to file template for Galactic Diffusion.")
+
+            pars = self.default_pars("PowerLaw",index=0.0)
+            source_type = "MapCubeFunction"
+            sss = LatSource('GalacticDiffuse',0.0,0.0,source_type,"PowerLaw",pars,gd_template)
+            sss.pars["Prefactor"] = Param("Prefactor",1.0,10.0,1.0,1.0,1,0.0)
+            sss.pars["Index"] = Param("Index",0.0,1.0,-1.0,1.0,0,0.0)
+            sss.pars["Scale"] = Param("Scale",1.0e2,2.0e2,5.0e1,1.0,0,0.0)
+            if sss.name not in self.SourceList: self.SourceList[sss.name] = sss
+
+
+# adding Extragalactic Diffuse Background Emission
+            
+            xxx = [templates[i] for i in  xrange(len(templates)) if templates[i][:3] == "iso"]
+            if len(xxx): 
+                gd_template = xxx[0]
+            else:
+                gd_template = ""
+                errors.append("Failed to file template for ExtraGalactic Diffusion.")
+
+            pars = self.default_pars("FileFunction")
+            source_type = "ConstantValue"
+            sss = LatSource('ExtragalacticDiffBkg',0.0,0.0,source_type,"FileFunction",pars,gd_template)
+            if sss.name not in self.SourceList: self.SourceList[sss.name] = sss
+
+                
+    def default_pars(self,model,index=-2.0,eb=300.0,beta=1000.0,cut=1000.0,f=1.0e-10):
                 prs = {}
-                print model
+#                print model
                 if model == "PowerLaw":
-                    prs = {"Prefactor":Param("Prefactor",1.0,1000.0,0.001,1.0e-9,False,0.0),
-                            "Index":Param("Index",index,-1.0,-5.0,1.0,False,0.0),
-                            "Scale":Param("Scale",100.0,2000.0,30.0,1.0,True,0.0)}
+                    fscale=int(floor(log10(f)))
+                    prs = {"Prefactor":Param("Prefactor",f/10**fscale,1000.0,0.001,10**fscale,0,0.0),
+                           "Index":    Param("Index",    index, 5.0,1.0 ,-1,0,0.0),
+                           "Scale":    Param("Scale",  100.0,2000.0,30.0,1,0,0.0)}
                 elif model == "LogParabola":
-                    prs = {"norm":Param("norm",1.0,1000.0,0.001,1.0e-9,False,0.0),
-                            "alpha":Param("alpha",index,10.0,0.0,1.0,False,0.0),
-                            "Eb":Param("Eb",eb,1.0e4,10.0,1.0,True,0.0),
-                            "beta":Param("beta",beta,10.0,0.0,1.0,False,0.0)}
-                elif model == "PLExpCutoff":
-                    prs = {"Prefactor":Param("Prefactor",1.0,1000.0,0.001,1.0e-9,False,0.0),
-                            "index":Param("index",index,-1.0,-5.0,1.0,False,0.0),
-                            "Ebreak":Param("Ebreak",eb,1.0e4,10.0,1.0,False,0.0),
-                            "Cutoff":Param("P1",cut,0.1,300.0,1.0,True,0.0),
-                            "P2":Param("P2",0.0,0.1,300.0,1.0,True,0.0),
-                            "P3":Param("P3",0.0,0.1,300.0,1.0,True,0.0),
+                    fscale=int(floor(log10(f)))
+                    prs = {"norm":Param("norm",f/10**fscale,1000.0,0.001,10**fscale,0,0.0),
+                           "alpha":Param("alpha",index,5.0,0.5,-1,0,0.0),
+                           "Eb":Param("Eb",eb,1.0e4,10.0,1,0,0.0),
+                           "beta":Param("beta",beta,10.0,0.0,1,0,0.0)}
+                elif model == "ExpCutoff":
+                    fscale=int(floor(log10(f)))
+                    prs = {"Prefactor":Param("Prefactor",f/10**fscale,1000.0,0.001,
+                                             10**fscale,0,0.0),
+                            "index":Param("index",index,5.0,1.0,-1,0,0.0),
+                            "Ebreak":Param("Ebreak",10.0,1.0,300.0,1,0,0.0),
+                            "P1":Param("P1",100.0,0.1,300.0,1,0,0.0),
+                            "P2":Param("P2",0.0,-1.0,1.0,1,0,0.0),
+                            "P3":Param("P3",0.0,-1.0,1.0,1,0,0.0),
                             }
+                elif model == "PLExpCutoff":
+                    fscale=int(floor(log10(f)))
+                    prs = {"Prefactor":Param("Prefactor",f/10**fscale,1000.0,0.001,
+                                             10**fscale,0,0.0),
+                            "index":Param("index",index,1.0,5.0,-1,0,0.0),
+                            "Ebreak":Param("Ebreak",eb,1.0e4,10.0,1,0,0.0),
+                            "Cutoff":Param("P1",cut,0.1,300.0,1,0,0.0),
+                            "P2":Param("P2",0.0,0.1,300.0,1,0,0.0),
+                            "P3":Param("P3",0.0,0.1,300.0,1,0,0.0),
+                            }
+                elif model == "FileFunction":
+
+                    prs = { "Normalization":Param("Normalization",1.0,1e5,1e-5,1,0,0.0) }
 
                 return prs
         
 
-        
+    def write_xml_model(self):
 
+        dist = []
+        dtp = [('dist',float),('name','S20')]
+        for k in self.SourceList:
+            s = self.SourceList[k]
+            dist.append((sdist(s.ra,s.dec,self.ra,self.dec),k))
+        
+        darr = array(dist,dtype=dtp)
+        sort(darr,order='dist')
+        xmlf = open(self.model_file,'w')
+	xmlf.write('<?xml version="1.0" ?>\n')
+        xmlf.write('<source_library title="source library">\n')
+	xmlf.write('\n<!-- Point Sources -->\n')
+        diff_src = []
+        for s in sort(darr,order='dist'):
+
+            src = self.SourceList[s['name']]
+            sn = src.name
+            st = src.type
+
+            if st != "SkyDirFunction":
+                diff_src.append(s['name'])
+                continue
+
+            smodel = src.model
+            xmlf.write('<source name="%s" type="PointSource">\n' %(sn))
+            xmlf.write('\t<!-- Source is %s degrees away from ROI center -->\n' %s['dist'])
+            xmlf.write('\t<spectrum type="%s">\n'%smodel)
+            for par in src.pars:
+                p = src.pars[par]
+                fr = "0"
+                if p.fixed: fr = "1"
+
+                xmlf.write('\t\t<parameter free="%s" max="%e" min="%e" name="%s" scale="%d" value="%2.4f"/>\n'%(fr,p.max,p.min,p.name,p.scale,p.value))
+
+            xmlf.write('\t</spectrum>\n')
+            xmlf.write('\t<spatialModel type="SkyDirFunction">\n')
+            xmlf.write('\t\t<parameter free="0" max="360.0" min="-360.0" name="RA" scale="1.0" value="%s"/>\n' %src.ra)
+            xmlf.write('\t\t<parameter free="0" max="90" min="-90" name="DEC" scale="1.0" value="%s"/>\n' %src.dec)
+            xmlf.write('\t</spatialModel>\n')
+            xmlf.write('</source>\n')
+
+
+	xmlf.write('\n<!-- Extended Sources -->\n')
+        for n in diff_src:
+
+            src = self.SourceList[n]
+            sn = src.name
+            st = src.type
+            smodel = src.model
+            xmlf.write('<source name="%s" type="DiffuseSource">\n' %(sn))
+            xmlf.write('\t<!-- Source is %s degrees away from ROI center -->\n' %s['dist'])
+            addfile1 = ""
+            addfile2 = 'file="%s/%s"'%(self.templates_path,src.template)        
+            if smodel == "FileFunction": 
+                addfile1 = 'file="%s/%s"'%(self.templates_path,src.template)
+                addfile2 = ""
+            xmlf.write('\t<spectrum type="%s" %s>\n'%(smodel,addfile1))
+            for par in src.pars:
+                p = src.pars[par]
+                fr = "1"
+                if p.fixed: fr = "0"
+
+                xmlf.write('\t\t<parameter free="%s" max="%e" min="%e" name="%s" scale="%d" value="%2.4f"/>\n'%
+                           (fr,p.max,p.min,p.name,p.scale,p.value))
+
+
+            xmlf.write('\t</spectrum>\n')
+            xmlf.write('\t<spatialModel %s type="%s">\n'%(addfile2,src.type))
+            if src.type == "SpatialMap": 
+                xmlf.write('\t\t<parameter free="0" max="1000.0" min="0.001" name="Prefactor" scale="1.0" value="1.0"/>\n' %s)
+            if src.type == "MapCubeFunction": 
+                xmlf.write('\t\t<parameter free="0" max="1000.0" min="0.001" name="Normalization" scale="1.0" value="1.0"/>\n' %s)
+            if src.type == "ConstantValue": 
+                xmlf.write('\t\t<parameter free="0" max="10.0" min="0.0" name="Value" scale="1.0" value="1.0"/>\n' %s)
+            xmlf.write('\t</spatialModel>\n')
+            xmlf.write('</source>\n')
+            
+
+        xmlf.write('</source_library>\n')
+        
+        xmlf.close()
 
     def write_regions(self,regfile = ''):
 
@@ -484,17 +708,21 @@ class LatLike:
         regf.write("circle({0},{1},{2}\") # color=green  select=0\n".format(self.ra,\
                     self.dec,self.norm_deg*3600.0))
         regf.write("circle({0},{1},{2}\") # color=blue  select=0\n".format(self.ra,\
-                    self.dec,self.rad*3600.0))
-        regf.write("circle({0},{1},{2}\") # color=red \n".
+                    self.dec,self.none_deg*3600.0))
+        regf.write("circle({0},{1},{2}\") # color=yellow \n".
                    format(self.selected_ra,\
                           self.selected_dec,3600.0))
+
+        print self.selected_ra,\
+                          self.selected_dec
 
 
         for s in self.SourceList:
 #            if s.flux > self.show_flux:
-            n = s.name
-            if s.assoc_name != "": n = s.assoc_name
-            regf.write("point({0},{1}) # select=0 point=cross text=\"{2}\" color=cyan\n".format(s.ra,s.dec,n))
+            src = self.SourceList[s]
+            n = src.name
+            if src.assoc_name != "": n = src.assoc_name
+            regf.write("point({0},{1}) # select=0 point=cross text=\"{2}\" color=cyan\n".format(src.ra,src.dec,n))
 
         regf.close()
         
@@ -554,8 +782,8 @@ class LatLike:
                     self.norm_deg = atof(spl1[2][:-1])/3600.0
                 elif spl[-1] == "color=blue":
 #                    print spl1
-                    self.rad = atof(spl1[2][:-1])/3600.0
-                elif spl[-1] == "color=red":
+                    self.none_deg = atof(spl1[2][:-1])/3600.0
+                elif spl[-1] == "color=yellow":
 #                    print spl1
                     self.selected_ra = atof(spl1[0])
                     self.selected_dec = atof(spl1[1])
@@ -563,8 +791,6 @@ class LatLike:
 #                    print self.selected_ra,self.selected_dec,self.rad
 
 
-    def apply_regions(self):
-        pass
 
 
 #    def spc(self):
@@ -735,16 +961,25 @@ class LatSource:
 
     """Source class."""
 
-    def __init__(self,name,r,d,t,m,pars,f,flux=0.0,assoc=""):
+    def __init__(self,name,r,d,t,m,prs,f,flux=0.0,assoc=""):
+        self.name = "            "
         self.name = name
+        self.ra = float(0.0)
         self.ra = r
+        self.dec = float(0.0)
         self.dec = d
         self.model = m
         self.type = t
-        self.pars = pars
+        self.pars = {}
+
+        for p in prs:
+            self.pars[p] = prs[p]
+
         self.template = f
         self.flux = flux
         self.assoc_name = assoc
+#        print "%s, %s, %s, %s, %s"%(name,m,t,assoc,f)
+  
 
     def xml(self):
         pass
@@ -752,7 +987,7 @@ class LatSource:
 
 class Param:
 
-    def __init__(self,name,val,max,min,scale=1.0,fx=True,er = 0.0):
+    def __init__(self,name,val,max,min,scale=1.0,fx=0,er = 0.0):
         
         self.name = name
         self.value = val
